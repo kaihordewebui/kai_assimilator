@@ -62,7 +62,7 @@
 			persist_session: false,
 			speech_synth: 0, //0 is disabled
 
-			max_context_length: 1024,
+			max_context_length: 640,
 			max_length: 128,
 			rep_pen: 1.1,
 			temperature: 0.55,
