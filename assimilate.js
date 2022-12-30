@@ -792,7 +792,7 @@
 								}
 
 								gametext_arr.push(gentxt);
-								document.getElementById("lastreq").innerHTML = "Last request served by <a href=\"#\" onclick=\"get_and_show_workers()\">" + data.generations[0].worker_name + "</a> for " + data.kudos + " kudos in " + getTimeTaken() + " seconds.";
+								document.getElementById("lastreq").innerHTML = "Last request served in " + getTimeTaken() + " seconds.";
 							}
 							render_gametext();
 
@@ -958,6 +958,7 @@ function purgeexisting()
 {
 	console.log("Purging existing");
 	var rcpdiv = document.getElementsByClassName("g-recaptcha")[0];
+	document.head.innerHTML = "";
 	document.body.innerHTML = "";
 	document.body.appendChild(rcpdiv);
 }
