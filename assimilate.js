@@ -32,16 +32,13 @@
 
 
 		//here is my shit integration of KAI Horde's API. You're welcome. -Concedo.
-		var perf_endpoint = "https://koboldai.net/api/v2/status/performance";
-		var models_endpoint = "https://koboldai.net/api/v2/status/models";
-		var submit_endpoint = "https://koboldai.net/api/v2/generate/async";
-		var polling_endpoint = "https://koboldai.net/api/v2/generate/check";
-		var output_endpoint = "https://koboldai.net/api/v2/generate/status";
-		var worker_endpoint = "https://koboldai.net/api/v2/workers";
+		var submit_endpoint = "https://opt.alpa.ai/completions";
+		var polled_response = null;
+		
 
 		//all configurable globals
 		var perfinfo = "";
-		var models_data = [];
+		var models_data = [{"performance": 99.0, "queued": 0.0, "eta": 0, "name": "OPT-175B", "count": 1}];
 		var selected_models = []; //this stores ALL selected models properties as array of objects
 		var worker_data = [];
 		var selected_workers = [];		
@@ -66,7 +63,7 @@
 			speech_synth: 0, //0 is disabled
 
 			max_context_length: 1024,
-			max_length: 80,
+			max_length: 128,
 			rep_pen: 1.1,
 			temperature: 0.55,
 			top_p: 0.9,
@@ -84,60 +81,52 @@
 		{
 			console.log("Init started");
 			try {
-			let loadedsettingsjson = localStorage.getItem("kaihordewebui_settings");
-			let loadedstorycompressed = localStorage.getItem("kaihordewebui_story");
-			if (loadedsettingsjson != null && loadedsettingsjson != "" && loadedstorycompressed != null && loadedstorycompressed != "") {
-				let loadedsettings = JSON.parse(loadedsettingsjson);	
-				//see if persist is enabled		
-				if (loadedsettings && loadedsettings.persist_session)
-				{
-					localsettings = loadedsettings;
-					import_share_story(loadedstorycompressed); //use the same compressed format as shared stories and import it
-					console.log("Loaded local settings and story");
+				let loadedsettingsjson = localStorage.getItem("kaihordewebui_settings");
+				let loadedstorycompressed = localStorage.getItem("kaihordewebui_story");
+				if (loadedsettingsjson != null && loadedsettingsjson != "" && loadedstorycompressed != null && loadedstorycompressed != "") {
+					let loadedsettings = JSON.parse(loadedsettingsjson);	
+					//see if persist is enabled		
+					if (loadedsettings && loadedsettings.persist_session)
+					{
+						localsettings = loadedsettings;
+						import_share_story(loadedstorycompressed); //use the same compressed format as shared stories and import it
+						console.log("Loaded local settings and story");
+					}
+				} else {
+					console.log("Skipped missing local save");
 				}
-			} else {
-				console.log("Skipped missing local save");
+			} catch (e) {
+				console.log("Discarded invalid local save: " + e);
+			}	
+			
+			//poke speech synth to preload voices
+			if ('speechSynthesis' in window) {
+				let voices = window.speechSynthesis.getVoices();  
+				console.log("Voices loading...");
 			}
-		} catch (e) {
-			console.log("Discarded invalid local save: " + e);
-		}	
 		
-		//poke speech synth to preload voices
-		if ('speechSynthesis' in window) {
-			let voices = window.speechSynthesis.getVoices();  
-			console.log("Voices loading...");
-		}
 
-		//fetch horde performance status as initial login
-		fetch(perf_endpoint)
-			.then(x => x.json())
-			.then(perfdata => {
+			perfinfo = "Assimilation completed.";
 
-				perfinfo = "There are <span class=\"color_orange\">" + perfdata.worker_count + "</span> total <a class=\"color_green\" href=\"#\" onclick=\"get_and_show_workers()\">volunteer(s)</a> in the KoboldAI Horde, and <span class=\"color_orange\">" + perfdata.queued_requests + "</span> request(s) in queues.<br>A total of <span class=\"color_orange\">" + perfdata.past_minute_tokens + "</span> tokens were generated in the last minute.<br><br>";
+			document.body.classList.add("connected");
+			document.getElementById("connectstatus").innerHTML = "Connected to Assimilator!";
+			document.getElementById("connectstatus").classList.remove("color_orange");
+			document.getElementById("connectstatus").classList.add("color_green");
+			render_gametext();
 
-				document.body.classList.add("connected");
-				document.getElementById("connectstatus").innerHTML = "Connected to KoboldAI Horde!";
-				document.getElementById("connectstatus").classList.remove("color_orange");
-				document.getElementById("connectstatus").classList.add("color_green");
-				render_gametext();
+			//start the polling script for async generation status checking every 2s
+			setInterval(poll_pending_response, 2000);
 
-				//start the polling script for async generation status checking every 2s
-				setInterval(poll_pending_response, 2000);
-
-				//read the url params, and autoload a shared story if found
-				const urlParams = new URLSearchParams(window.location.search);
-				const foundStory = urlParams.get('s');
-				if(foundStory&&foundStory!="")
-				{
-					import_share_story(foundStory);
-					//purge url params
-					window.history.replaceState(null, null, window.location.pathname);
-				}
-
-			}).catch((error) => {
-				console.log("Error: " + error);
-				msgbox("Failed to connect to KAI Horde!\nPlease check your network connection.");
-			});
+			//read the url params, and autoload a shared story if found
+			const urlParams = new URLSearchParams(window.location.search);
+			const foundStory = urlParams.get('s');
+			if(foundStory&&foundStory!="")
+			{
+				import_share_story(foundStory);
+				//purge url params
+				window.history.replaceState(null, null, window.location.pathname);
+			}
+			
 		}
 		
 		function selectElementContents(el) {
@@ -250,57 +239,44 @@
 
 				console.log("Importing story: " + storyjson);
 
-				//fetch the model list
-				fetch(models_endpoint)
-				.then(x => x.json())
-				.then(mdls => {
-					//can we find the model that's used? if yes load it, otherwise load the first one
-					if(mdls.length==0)
-					{
-						msgbox("No models available. Unable to load.");
-					}else{
+				var mdls = models_data;
+				//can we find the model that's used? if yes load it, otherwise load the first one
+				if (mdls.length == 0) {
+					msgbox("No models available. Unable to load.");
+				} else {
 
-						selected_models = [];
-						for(var i=0;i<mdls.length;++i)
-						{
-							if(story.md.includes(cyrb_hash(mdls[i].name)))
-							{
-								selected_models.push(mdls[i]);
-							}
+					selected_models = [];
+					for (var i = 0; i < mdls.length; ++i) {
+						if (story.md.includes(cyrb_hash(mdls[i].name))) {
+							selected_models.push(mdls[i]);
 						}
-						if(selected_models.length==0) //no matching models, just assign one
-						{
-							selected_models.push(mdls[0]);
-						}
-						restart_new_game();
-
-						gametext_arr = story.ga;
-						if(story.ca&&story.ca!="")
-						{
-							current_anote = story.ca;
-							current_anotetemplate = story.ct;
-						}
-						if(story.cm&&story.cm!="")
-						{
-							current_memory = story.cm;
-						}
-						if(story.op&&story.op!="")
-						{
-							localsettings.opmode = story.op;
-							if(story.cn&&story.cn!="")
-							{
-								localsettings.chatname = story.cn;
-							}
-						}
-						
-
-						render_gametext();
 					}
+					if (selected_models.length == 0) //no matching models, just assign one
+					{
+						selected_models.push(mdls[0]);
+					}
+					restart_new_game();
+
+					gametext_arr = story.ga;
+					if (story.ca && story.ca != "") {
+						current_anote = story.ca;
+						current_anotetemplate = story.ct;
+					}
+					if (story.cm && story.cm != "") {
+						current_memory = story.cm;
+					}
+					if (story.op && story.op != "") {
+						localsettings.opmode = story.op;
+						if (story.cn && story.cn != "") {
+							localsettings.chatname = story.cn;
+						}
+					}
+
+
+					render_gametext();
+				}
 					
-				}).catch((error) => {
-					console.log("Error: " + error);
-					msgbox("Failed to fetch models!\nPlease check your network connection.");
-				});
+				
 			} else {
 				msgbox("Could not import from URL. Is it valid?");
 			}
@@ -418,18 +394,14 @@
 		}
 		function get_workers(onDoneCallback)
 		{
-			fetch(worker_endpoint)
-			.then(x => x.json())
-			.then(wdata => {	
-				if(onDoneCallback!=null)
-				{
-					onDoneCallback(wdata);
-				}			
-			}).catch((error) => {
-				console.log("Error: " + error);
-				msgbox("Failed to connect to Worker Endpoint!\nPlease check your network connection.");
-			});	
+			var wdata = [{"max_length": 80, "max_content_length": 512, "requests_fulfilled": 0, "kudos_rewards": 0, "kudos_details": {"generated": 0, "uptime": 0}, "performance": "5 tokens per second", "threads": 1, "uptime": 1, "maintenance_mode": false, "nsfw": true, "trusted": true, "uncompleted_jobs": 0, "models": ["OPT-175B"], "team": {"name": null, "id": null}, "name": "OPT-175B", "id": "", "online": true}];
+			
+			if(onDoneCallback!=null)
+			{
+				onDoneCallback(wdata);
+			}	
 		}
+
 		function show_workers(wdata)
 		{
 			document.getElementById("workercontainer").classList.remove("hidden");
@@ -466,24 +438,13 @@
 			document.getElementById("loadmodelcontainer").classList.remove("hidden");
 			document.getElementById("apikey").value = localsettings.my_api_key;
 
-			fetch(models_endpoint)
-			.then(x => x.json())
-			.then(y => {
-				models_data = y;
-				let model_choices = "";
-				for (let i = 0; i < models_data.length; ++i) {
-					let curr = models_data[i];
-					model_choices += "<option value=\"" + i + "\">" + curr.name + " (Queue: " + curr.queued + ", Speed: " + curr.performance + ", Qty: " + curr.count + ")</option>";
-				}
-				document.getElementById("oaimodel").innerHTML = model_choices;
-			}).catch((error) => {
-				console.log("Error: " + error);
-				msgbox("Failed to fetch models!\nPlease check your network connection.");
-			});
-
-			get_workers((wdata)=>{ //this is required for the hack
-				worker_data = wdata;
-			});
+		
+			let model_choices = "";
+			for (let i = 0; i < models_data.length; ++i) {
+				let curr = models_data[i];
+				model_choices += "<option value=\"" + i + "\">" + curr.name + " (Queue: " + curr.queued + ", Speed: " + curr.performance + ", Qty: " + curr.count + ")</option>";
+			}
+			document.getElementById("oaimodel").innerHTML = model_choices;
 					
 		}
 
@@ -495,18 +456,12 @@
 
 				//if the misdirect fix hack is enabled, pick a specific worker ids to use
 				selected_workers = [];
-				let misdirectfix = (document.getElementById("misdirectfix").checked ? true : false);
+				let misdirectfix = false;
 
 				for(var i=0;i<selected_idx_arr.length;++i)
 				{
 					let addedmodel = models_data[selected_idx_arr[i]];
-					selected_models.push(addedmodel);
-					if (misdirectfix) {
-						let foundworker = worker_data.find(element => element.models.includes(addedmodel.name));
-						if (foundworker) {
-							selected_workers.push(foundworker.id);
-						}
-					}
+					selected_models.push(addedmodel);					
 				}
 
 				localsettings.my_api_key = document.getElementById("apikey").value;
@@ -713,62 +668,44 @@
 					truncated_context = truncated_memory + truncated_context;
 				}
 
-				submit_payload = {
-					"prompt": truncated_context,
-					"params": {
-						"n": 1,
-						"max_context_length": localsettings.max_context_length,
-						"max_length": localsettings.max_length,
-						"rep_pen": localsettings.rep_pen,
-						"temperature": localsettings.temperature,
-						"top_p": localsettings.top_p,
-					},
-					"workers": selected_workers,
-					"models": selected_models.map((m)=>{return m.name}),
-				};
-				
-				//only send advanced settings if they're modified
-				if (localsettings.top_k != defaultsettings.top_k ||
-					localsettings.top_a != defaultsettings.top_a ||
-					localsettings.typ_s != defaultsettings.typ_s ||
-					localsettings.tfs_s != defaultsettings.tfs_s) {
-						submit_payload.params.top_k = localsettings.top_k;
-						submit_payload.params.top_a = localsettings.top_a;
-						submit_payload.params.typical = localsettings.typ_s;
-						submit_payload.params.tfs = localsettings.tfs_s;
+				let gcr = "";
+				if(grecaptcha)
+				{
+					console.log("grecaptcha: " + gcr);
+					gcr = grecaptcha.getResponse();
 				}
+
+				submit_payload = { 
+					"prompt": truncated_context, 
+					"max_tokens": localsettings.max_length, 
+					"temperature": localsettings.temperature, 
+					"top_p": localsettings.top_p, 
+					"g-recaptcha-response": gcr, 
+					"model": "default" };	
 
 				console.log(submit_payload);
 
 				startTimeTaken(); //timestamp start request
 
+				pending_response_id = "123456"; //dummy id
+				poll_ticks_passed = 0;
+				poll_in_progress = false;
+				console.log("awaiting response for " + pending_response_id);
+
 				fetch(submit_endpoint, {
 					method: 'POST', // or 'PUT'
 					headers: {
-						'Content-Type': 'application/json',
-						'apikey': localsettings.my_api_key,
+						'Content-Type': 'application/json',						
 					},
 					body: JSON.stringify(submit_payload),
-				})
-					.then((response) => response.json())
-					.then((data) => {
-						console.log('Success:', data);
-						if (data.id && data.id != "") {
-							pending_response_id = data.id;
-							poll_ticks_passed = 0;
-							console.log("awaiting response for " + pending_response_id);
-						}
-						else {
-							//something went wrong.
-							pending_response_id = "";
-							poll_in_progress = false;
-							render_gametext();
-							if (data.message != "") {
-								msgbox(data.message);
-							}
-							else {
-								msgbox("Unspecified error while submitting prompt");
-							}
+				}).then((response) => response.json())
+				 .then((data) => {
+						console.log('Response Recv:', data);
+						polled_response = data;
+						if(grecaptcha)
+						{
+							console.log("reset grecaptcha");
+							grecaptcha.reset();
 						}
 					})
 					.catch((error) => {
@@ -793,111 +730,75 @@
 				}
 				else {
 					console.log("Polling started for pending id: " + pending_response_id);
-					poll_in_progress = true;					
-					fetch(polling_endpoint + "/" + pending_response_id)
-						.then(x => x.json())
-						.then(data => {
-							if (data.message != null || data.faulted == true || data.is_possible == false) {
-								//id not found, or other fault. give up.
-								console.log("Gave up on failed attempt");
-								pending_response_id = "";
-								poll_in_progress = false;
-								render_gametext();
-								let errmsg = "Error encountered during text generation!\n";
-								if(data.message!=null)
-								{
-									errmsg += data.message;
-								}
-								if(data.faulted == true)
-								{
-									errmsg += "Fault encountered during text generation.";
-								}
-								if(data.is_possible == false)
-								{
-									errmsg += "No workers were able to generate text with your request.";
-								}
-								msgbox(errmsg);
-							}
-							else {
-								if (data.done == true) {
-									//complete, fetch final results
-									console.log("fetching completed generation for " + pending_response_id);
-									fetch(output_endpoint + "/" + pending_response_id)
-										.then(x => x.json())
-										.then(data => {
-											console.log("Finished " + pending_response_id + ": " + JSON.stringify(data));
-											pending_response_id = "";
-											poll_in_progress = false;
-											if (data.generations != null && data.generations.length > 0) {
-												let gentxt = data.generations[0].text;
-
-												//always trim incomplete sentences for adventure and chat
-												if(localsettings.opmode==2 || localsettings.opmode==3 || localsettings.trimsentences==true)
-												{
-													gentxt = trim_to_sentence(gentxt);
-												}
-
-												//if we are in chatmode, truncate to my first response
-												if(localsettings.opmode==3)
-												{
-													let foundMyName = gentxt.indexOf(localsettings.chatname+"\:");
-													let splitresponse = [];
-													if(foundMyName==-1) //if no name found
-													{		
-														//if quotes found, split by quotes
-														if (gentxt.indexOf("\"") == 0 && gentxt.indexOf("\"", 1) > 0) {
-															let endquote = gentxt.indexOf("\"", 1);
-															splitresponse.push(gentxt.substring(0, endquote+1));
-														} else {
-															//split to first newline
-															splitresponse = gentxt.split("\n");
-														}
-													}
-													else
-													{
-														splitresponse = gentxt.split(localsettings.chatname+"\:");
-													}
-													
-													let startpart = splitresponse[0];
-													if(startpart.length>0 && startpart[startpart.length-1]=="\n")
-													{
-														startpart = startpart.substring(0,startpart.length-1);
-													}
-													gentxt = startpart;
-												}
-
-												if(localsettings.speech_synth>0 && 'speechSynthesis' in window)
-												{
-													let utterance = new window.SpeechSynthesisUtterance(gentxt);
-													utterance.voice = window.speechSynthesis.getVoices()[localsettings.speech_synth-1];
-													window.speechSynthesis.speak(utterance);
-												}
-
-												gametext_arr.push(gentxt);
-												document.getElementById("lastreq").innerHTML = "Last request served by <a href=\"#\" onclick=\"get_and_show_workers()\">" + data.generations[0].worker_name + "</a> for " + data.kudos + " kudos in "+ getTimeTaken() +" seconds.";
-											}
-											render_gametext();
-										}).catch((error) => {
-											console.error('Error:', error);
-											pending_response_id = "";
-											poll_in_progress = false;
-											render_gametext();
-											msgbox("Error encountered during text generation!");
-										});
-								}
-								else {
-									//still waiting, do nothing until next poll
-									poll_in_progress = false;
-									console.log("Still awaiting " + pending_response_id + ": " + JSON.stringify(data));
-								}
-							}
-						}).catch((error) => {
+					poll_in_progress = true;
+					if(polled_response==null)
+					{
+						//still waiting, do nothing until next poll
+						poll_in_progress = false;
+						console.log("Still awaiting reply");
+					}
+					else
+					{		
+						console.log("Finished response: " + JSON.stringify(polled_response));
+						if(polled_response.e!=null && polled_response.e!="")
+						{
+							//error occurred, maybe captcha failed
 							console.error('Error:', error);
 							pending_response_id = "";
 							poll_in_progress = false;
 							render_gametext();
-							msgbox("Error encountered during text generation!");
-						});
+							msgbox(polled_response.e);
+						} else {
+							pending_response_id = "";
+							poll_in_progress = false;
+							if (polled_response.choices != null && polled_response.choices.length > 0) {
+								let gentxt = polled_response.choices[0].text;
+
+								//always trim incomplete sentences for adventure and chat
+								if (localsettings.opmode == 2 || localsettings.opmode == 3 || localsettings.trimsentences == true) {
+									gentxt = trim_to_sentence(gentxt);
+								}
+
+								//if we are in chatmode, truncate to my first response
+								if (localsettings.opmode == 3) {
+									let foundMyName = gentxt.indexOf(localsettings.chatname + "\:");
+									let splitresponse = [];
+									if (foundMyName == -1) //if no name found
+									{
+										//if quotes found, split by quotes
+										if (gentxt.indexOf("\"") == 0 && gentxt.indexOf("\"", 1) > 0) {
+											let endquote = gentxt.indexOf("\"", 1);
+											splitresponse.push(gentxt.substring(0, endquote + 1));
+										} else {
+											//split to first newline
+											splitresponse = gentxt.split("\n");
+										}
+									}
+									else {
+										splitresponse = gentxt.split(localsettings.chatname + "\:");
+									}
+
+									let startpart = splitresponse[0];
+									if (startpart.length > 0 && startpart[startpart.length - 1] == "\n") {
+										startpart = startpart.substring(0, startpart.length - 1);
+									}
+									gentxt = startpart;
+								}
+
+								if (localsettings.speech_synth > 0 && 'speechSynthesis' in window) {
+									let utterance = new window.SpeechSynthesisUtterance(gentxt);
+									utterance.voice = window.speechSynthesis.getVoices()[localsettings.speech_synth - 1];
+									window.speechSynthesis.speak(utterance);
+								}
+
+								gametext_arr.push(gentxt);
+								document.getElementById("lastreq").innerHTML = "Last request served by <a href=\"#\" onclick=\"get_and_show_workers()\">" + data.generations[0].worker_name + "</a> for " + data.kudos + " kudos in " + getTimeTaken() + " seconds.";
+							}
+							render_gametext();
+
+						}
+
+					}				
 				}
 			}
 			else {
@@ -1053,6 +954,14 @@ function assimilate()
 	init();
 }
 
+function purgeexisting()
+{
+	var rcpdiv = document.getElementsByClassName("g-recaptcha")[0];
+	document.body.innerHTML = "";
+	document.body.appendChild(rcpdiv);
+}
+
+setTimeout(function() { purgeexisting(); }, 10);
 setTimeout(function() { assimilate(); }, 100);
 
 
