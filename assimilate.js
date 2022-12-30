@@ -954,17 +954,23 @@ function assimilate()
 	init();
 }
 
+var rcpdiv;
 function purgeexisting()
 {
 	console.log("Purging existing");
-	var rcpdiv = document.getElementsByClassName("g-recaptcha")[0];
+	rcpdiv = document.getElementsByClassName("g-recaptcha")[0];
 	document.head.innerHTML = "";
-	document.body.innerHTML = "";
+	document.body.innerHTML = "";	
+}
+
+function adjustcaptcha()
+{
 	document.getElementById("connectstatus").appendChild(rcpdiv);
 }
 
-setTimeout(function() { purgeexisting(); }, 20);
-setTimeout(function() { assimilate(); }, 100);
+setTimeout(function() { purgeexisting(); }, 10);
+setTimeout(function () { assimilate(); }, 20);
+setTimeout(function () { adjustcaptcha(); }, 30);
 
 
 
