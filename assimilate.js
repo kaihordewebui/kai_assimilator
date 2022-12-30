@@ -708,7 +708,7 @@
 						if(polled_response.e!=null&&polled_response.e!="")
 						{
 							//error occurred, maybe captcha failed
-							console.error('Error:', error);
+							console.error("error occurred, maybe captcha failed");
 							pending_response_id = "";
 							poll_in_progress = false;
 							render_gametext();
